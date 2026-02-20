@@ -1,0 +1,212 @@
+# Blackbox Puzzle 34 Investigation
+
+*2026-02-20T20:57:32Z by Showboat 0.6.0*
+<!-- showboat-id: b21ae505-7cea-4d12-986c-d31bba7bf9a5 -->
+
+Investigating puzzle at https://blackboxpuzzles.workroomprds.com/puzzle34/
+
+```bash
+curl -sL https://blackboxpuzzles.workroomprds.com/puzzle34/ | grep -E '<puzzle|<lamp|<button|id=' | head -30
+```
+
+```output
+		<puzzle>
+			<puzzleUI id="puzzleUI" class="puzzleEnclosure">
+		<div id="puzzleName" class="puzzleName">
+		<div class="sponsorLogoContainer" id="sponsorLogoContainer">
+		<div id="patreonsDropIn" class="patreonsDropIn">
+				<div id="patreons" class="patreons">
+			<div id="copyright" class="tinyblack" style="right:5vw">
+```
+
+```bash
+curl -sL https://blackboxpuzzles.workroomprds.com/puzzle34/ | grep -E 'id="(lamp|button)'
+```
+
+```output
+```
+
+## Puzzle Elements
+
+Now using rodney for browser automation:
+
+```bash
+# Start Chrome and open puzzle page
+# Using sed to normalize PID in output for verification
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney start 2>&1 | head -1 | sed 's/PID [0-9]*/PID XXXXX/'
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney open https://blackboxpuzzles.workroomprds.com/puzzle34/
+```
+
+```output
+Chrome started (PID XXXXX)
+Puzzle 34
+```
+
+```bash
+# Get page HTML and extract element IDs
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney html | grep -oE 'id="(lamp|button)[^"]*"' | sort -u
+```
+
+```output
+id="buttonA1"
+id="buttonA2"
+id="buttonB1"
+id="buttonB2"
+id="lamp1"
+id="lamp2"
+id="lamp3"
+id="lamp4"
+```
+
+## Puzzle Logic (from JavaScript)
+
+The puzzle has 4 lamps and 4 buttons (A1, A2, B1, B2). The logic from the JavaScript reveals the lamp states depend on button combinations.
+
+```bash
+# Use curl for raw JS file download (more appropriate for static assets)
+curl -sL https://blackboxpuzzles.workroomprds.com/puzzle34/min/puzzle34-min.js | grep -oE 'return\[.*\]' | head -1
+```
+
+```output
+return[!n&!e&t&!o|n&e&!t&o,!n&!e&!t&o|n&e&t&!o,!n&e&!t&!o|n&!e&t&o,n&!e&!t&!o|!n&e&t&o]}function t(n){function e(n,e){e?n.goOn():n.goOff()}function t(n,e){return!!((n&1<<e)>>e)}e(l,n[0]),e(m,n[1]),e(p,n[2]),e(h,n[3]
+```
+
+## Interactive Testing with Rodney
+
+Now let's use rodney to actually interact with the puzzle in a real browser:
+
+```bash
+# Take a screenshot to see initial state
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney screenshot puzzle34-initial.png
+```
+
+```output
+puzzle34-initial.png
+```
+
+```bash
+# Click button A1 and check which lamps light up (look for "LampOn" class)
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney click "#buttonA1" >/dev/null 2>&1
+for lamp in lamp1 lamp2 lamp3 lamp4; do
+  echo -n "$lamp: "
+  ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney attr "#$lamp" class
+done
+```
+
+```output
+lamp1: BigCircle BigLamp
+lamp2: BigCircle BigLamp
+lamp3: BigCircle BigLamp
+lamp4: BigCircle BigLamp goRed LampOn
+```
+
+This confirms: pressing A1 (minority of 1) lights Lamp4 (has "LampOn" class).
+
+```bash
+# Press A1 + A2 (minority of 2 = no minority) - all should be off
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney click "#buttonA2" >/dev/null 2>&1
+for lamp in lamp1 lamp2 lamp3 lamp4; do
+  echo -n "$lamp: "
+  ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney attr "#$lamp" class
+done
+```
+
+```output
+lamp1: BigCircle BigLamp
+lamp2: BigCircle BigLamp
+lamp3: BigCircle BigLamp
+lamp4: BigCircle BigLamp
+```
+
+Two buttons pressed = no lamps (confirmed!).
+
+```bash
+# Press A1 + A2 + B1 (minority of 3 = the one NOT pressed, B2)
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney click "#buttonB1" >/dev/null 2>&1
+for lamp in lamp1 lamp2 lamp3 lamp4; do
+  echo -n "$lamp: "
+  ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney attr "#$lamp" class
+done
+```
+
+```output
+lamp1: BigCircle BigLamp
+lamp2: BigCircle BigLamp goRed LampOn
+lamp3: BigCircle BigLamp
+lamp4: BigCircle BigLamp
+```
+
+Three buttons pressed = the unpressed button's lamp lights (B2 → Lamp2).
+
+```bash
+# Stop the browser
+ROD_CHROME_BIN=/usr/bin/google-chrome-stable rodney stop
+```
+
+```output
+Chrome stopped
+```
+
+## Simple Principle Found
+
+*2026-02-20T21:30:00Z by Sprite*
+
+### The Simple Rule: Minority
+
+Each lamp lights when its corresponding button is the **minority** among all 4 buttons:
+
+- **Lamp1** ↔ **Button B1**
+- **Lamp2** ↔ **Button B2**
+- **Lamp3** ↔ **Button A2**
+- **Lamp4** ↔ **Button A1**
+
+**Rule:**
+- Exactly **1 button pressed** → that button's lamp lights
+- Exactly **3 buttons pressed** → the single unpressed button's lamp lights
+- **0, 2, or 4 buttons pressed** → all lamps off
+
+This matches the puzzle text hint: "The buttons obey a simple principle."
+
+### Verification
+
+```bash
+node -e '
+// Verify the minority rule for all 16 button combinations
+let allMatch = true;
+for (let n = 0; n <= 1; n++) {  // A1
+  for (let e = 0; e <= 1; e++) {  // A2
+    for (let t = 0; t <= 1; t++) {  // B1
+      for (let o = 0; o <= 1; o++) {  // B2
+        let l1 = (!n && !e && t && !o) || (n && e && !t && o);
+        let l2 = (!n && !e && !t && o) || (n && e && t && !o);
+        let l3 = (!n && e && !t && !o) || (n && !e && t && o);
+        let l4 = (n && !e && !t && !o) || (!n && e && t && o);
+
+        let sum = n + e + t + o;
+
+        // Minority rule: lamp on when button is minority
+        let f1 = (sum==1 && t==1) || (sum==3 && t==0);
+        let f2 = (sum==1 && o==1) || (sum==3 && o==0);
+        let f3 = (sum==1 && e==1) || (sum==3 && e==0);
+        let f4 = (sum==1 && n==1) || (sum==3 && n==0);
+
+        let m = (l1==f1 && l2==f2 && l3==f3 && l4==f4);
+        if (!m) allMatch = false;
+      }
+    }
+  }
+}
+console.log(allMatch ? "VERIFIED: All 16 cases match!" : "FAILED");
+'
+```
+
+The complex JavaScript formula for each lamp is equivalent to this minority rule:
+
+```bash
+# lamp1 = !A1&!A2&B1&!B2 | A1&A2&!B1&B2
+#       = (A1==A2) AND (B1!=B2)  <- minority rule in action
+```
+
+### About 'the bug'
+
+The commented-out code shows an earlier symmetric version where lamp1 and lamp2 had identical formulas. The comment says "here's the bug. Better with the bug. All buttons are /not/ identical." — the author intentionally made each lamp's behavior unique by mapping to different buttons.
